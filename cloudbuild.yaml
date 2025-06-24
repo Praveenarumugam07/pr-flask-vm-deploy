@@ -1,0 +1,97 @@
+steps:
+  # Step 1: Zip the current directory (excluding cloudbuild.yaml)
+  - name: 'ubuntu'
+    id: 'Zip source folder'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        apt-get update && apt-get install -y zip
+        zip -r app-source.zip . -x "cloudbuild.yaml"
+
+  # Step 2: Check if VM exists, create only if it doesn't
+  - name: 'gcr.io/cloud-builders/gcloud'
+    id: 'Check and create VM if needed'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        if ! gcloud compute instances describe github-vm --zone=asia-south1-c --project=mythic-beanbag-463309-e9 >/dev/null 2>&1; then
+          echo "VM does not exist. Creating now..."
+          gcloud compute instances create github-vm \
+            --zone=asia-south1-c \
+            --machine-type=e2-micro \
+            --image-family=debian-11 \
+            --image-project=debian-cloud \
+            --boot-disk-size=20GB \
+            --tags=http-server \
+            --scopes=https://www.googleapis.com/auth/cloud-platform \
+            --service-account=956387703564-compute@developer.gserviceaccount.com \
+            --project=mythic-beanbag-463309-e9
+        else
+          echo "VM already exists. Skipping creation."
+        fi
+
+  # Step 3: Copy app-source.zip to VM
+  - name: 'gcr.io/cloud-builders/gcloud'
+    id: 'Copy ZIP to VM'
+    args:
+      - compute
+      - scp
+      - app-source.zip
+      - praveen_a@github-vm:/home/praveen_a
+      - --zone=asia-south1-c
+      - --project=mythic-beanbag-463309-e9
+
+  # Step 4: Create the startup script
+  - name: 'ubuntu'
+    id: 'Create startup script'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        cat << 'EOF' > startup.sh
+        #!/bin/bash
+        set -e
+
+        # Install required packages
+        sudo apt-get update
+        sudo apt-get install -y unzip python3 python3-pip
+
+        # Unzip the source code
+        unzip -o /home/praveen_a/app-source.zip -d /home/praveen_a
+
+        # Move into source directory
+        cd /home/praveen_a
+
+        # Install Flask
+        pip3 install flask
+
+        # Run the app
+        nohup python3 app.py > app.log 2>&1 &
+        EOF
+
+  # Step 5: Copy startup script to VM
+  - name: 'gcr.io/cloud-builders/gcloud'
+    id: 'Copy startup script to VM'
+    args:
+      - compute
+      - scp
+      - startup.sh
+      - praveen_a@github-vm:/home/praveen_a
+      - --zone=asia-south1-c
+      - --project=mythic-beanbag-463309-e9
+
+  # Step 6: SSH into VM and run the startup script
+  - name: 'gcr.io/cloud-builders/gcloud'
+    id: 'Run startup script on VM'
+    args:
+      - compute
+      - ssh
+      - praveen_a@github-vm
+      - --zone=asia-south1-c
+      - --project=mythic-beanbag-463309-e9
+      - --command=bash /home/praveen_a/startup.sh
+
+options:
+  logging: CLOUD_LOGGING_ONLY
